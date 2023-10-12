@@ -1,6 +1,20 @@
 import time
-import os
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+import os
+
+'''
+site energy -> activation energy -> diffusion rate
+
+site energy(E_i) = -N*(E_b)/2
+
+activation energy(E_a) = E_0 + alpha * E_r
+E_r = E_i(end) - E_i(start)
+
+diffusion rate = f*exp(-E_a/(k*T)) (Arrhenius)
+f is ~ 10^13 for most metals
+'''
 
 def get_site_energy(bond_energy, bond_num):
     return -bond_num * bond_energy/2
@@ -12,16 +26,18 @@ def get_activation_energy(e_start, e_end, alpha = 0.1, e0 = 0):
     else:
         return e0 + alpha*e_reaction
 
-def get_diffusion_rate(e_a, T=300, f=1):
+def get_diffusion_rate(e_a, T=300, f=1E13):
     k_B = 8.617333262145e-5  # Boltzmann constant in eV/K
     return f*np.exp(-e_a/(k_B*T))
 
+'---------------------------------------------------------'
 
 # function to initialize the lattice
 '''
 Initialize the lattice
 1 : atom
 0 : vacancy or vacumm
+2 more layer to make vacuum
 '''
 def init_lattice(width, height):
     lattice = np.ones((height+2, width), dtype=int)
@@ -30,12 +46,22 @@ def init_lattice(width, height):
 
     return lattice
 
+# Function to draw lattice on prompt
+def draw_lattice(lattice):
+    height, width = lattice.shape
+    for y in range(height):
+        for x in range(width):
+            if lattice[y, x] == 1:
+                print('●', end = '')
+            else:
+                print(' ', end='')
+        print('\n')
+
 '''
 function that finds every possible way
-current state
-1. atom jump at surface
+1. atom jumped from surface
 2. return to previous position(jumped from surface)
-3. atom jump from side
+3. other diffusion...
 '''
 def get_atoms_around_site(lattice, x, y, total=False):
     height, width = lattice.shape
@@ -58,69 +84,45 @@ def get_atoms_around_site(lattice, x, y, total=False):
         return left, up, right, down
 
 def find_candidate(lattice):
-    global rate_0to3
-    global rate_2to3
-    global rate_3to0
-    global rate_3to2
-    global rate_3to3
+    global e_a
+    global diffusion_rate
     height, width = lattice.shape
     candidate_table = []
     diffusion_table = []
     motion_table = []
     for x in range(width):
         for y in range(height):
-            # find atom(value 1)
-            if lattice[y, x] == 1:
-                left, up, right, down = get_atoms_around_site(lattice, x, y)
-                bond_num = down + up + right + left
-                # print(bond_num)
-                # classify the atoms by bond_num
-                # 0 bond num : jumped atom from surface
-                if bond_num == 0:
-                    candidate_table.append((y, x))
-                    diffusion_table.append(rate_0to3)
-                    if y == height-1 :
-                        motion_table.append(2)
-                    else :
-                        motion_table.append(4)
-                # 2 bond num : surface atom next to vacancy
-                elif bond_num == 2:
-                    # print('find')
-                    candidate_table.append((y, x))
-                    diffusion_table.append(rate_2to3)
-                    if left == 0 :
-                        motion_table.append(1)
-                    else:
+            # find vacancy
+            if lattice[y, x] == 0:
+                left, up , right, down = get_atoms_around_site(lattice, x, y)
+                neighbor = left+up+right+down
+                if neighbor:
+                    if left:
+                        neighbor_of_left = get_atoms_around_site(lattice, (x-1)%width, y, True)
+                        candidate_table.append((y, (x-1)%width))
                         motion_table.append(3)
-                # 3 bond num
-                # 3-1. surface atom
-                elif bond_num == 3:
-                    candidate_table.append((y, x))
-                    if left == 0 :
-                        num_next_site_bond = get_atoms_around_site(lattice, (x-1+width)%width, y, total=True)
+                        diffusion_table.append(diffusion_rate[neighbor_of_left, neighbor-1])
+                    if right:
+                        neighbor_of_right = get_atoms_around_site(lattice, (x+1)%width, y, True)
+                        candidate_table.append((y, (x+1)%width))
                         motion_table.append(1)
-                    elif up == 0 :
-                        num_next_site_bond = get_atoms_around_site(lattice, x, y-1, total=True)
-                        motion_table.append(2)
-                    elif right == 0 :
-                        num_next_site_bond = get_atoms_around_site(lattice, (x+1+width)%width, y, total=True)
-                        motion_table.append(3)
-                    else:
-                        num_next_site_bond = get_atoms_around_site(lattice, x, y+1, total=True)
+                        diffusion_table.append(diffusion_rate[neighbor_of_right, neighbor-1])
+                    if up:
+                        neighbor_of_up = get_atoms_around_site(lattice, x, y-1, True)
+                        candidate_table.append((y-1, x))
                         motion_table.append(4)
-                    
-                    if num_next_site_bond == 0:
-                        diffusion_table.append(rate_3to0)
-                    elif num_next_site_bond == 2:
-                        diffusion_table.append(rate_3to2)
-                    else:
-                        diffusion_table.append(rate_3to3)
-                
+                        diffusion_table.append(diffusion_rate[neighbor_of_up, neighbor-1])
+                    if down:
+                        neighbor_of_down = get_atoms_around_site(lattice, x, y+1, True)
+                        candidate_table.append((y+1, x))
+                        motion_table.append(2)
+                        diffusion_table.append(diffusion_rate[neighbor_of_down, neighbor-1]) 
     
     return candidate_table, diffusion_table, motion_table
 
 # KMC function
 def diffuse_one_step(lattice, print_out=False):
+    global time_elapsed
     cand, dif, motion = find_candidate(lattice)
     dif = np.array(dif)
 
@@ -128,13 +130,14 @@ def diffuse_one_step(lattice, print_out=False):
     
     # pick 1
     u = np.random.uniform(low=1e-6, high=1)
+    u_time = np.random.uniform(low=1e-6, high=1)
     cum_dif = np.cumsum(dif)
 
     chosen_idx = np.argwhere(u*total_dif < cum_dif)[0][0]
 
     # print information
-    print(f'total_diff : {total_dif}')
     if print_out:
+        print(f'total_diff : {total_dif}')
         print(f'chosen : {cand[chosen_idx]} atom')   
     # print(f'motion : {motion[chosen_idx]}')
     # print(cand[chosen_idx])
@@ -165,57 +168,52 @@ def diffuse_one_step(lattice, print_out=False):
         if print_out:
             print(f'go down')   
     
-
-
-def draw_lattice(lattice):
-    height, width = lattice.shape
-    for y in range(height):
-        for x in range(width):
-            if lattice[y, x] == 1:
-                print('●', end = '')
-            else:
-                print(' ', end='')
-        print('\n')
-
-#------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    # time update
+    delta_t = -np.log(u_time)/total_dif
+    # print(delta_t)
+    time_elapsed += delta_t
+'--------------------------------------------------------------------------------------------'
 # Parameters
-# Size of the square lattice (height x width)
+# Size of the lattice (height x width)
 width = 100  
 height = 10
 
 # parameter for diffusion rate
-bond_energy = 10 #eV
+'''
+bond energy : 200kJ/mol ~~ 2.07 eV/particle
+'''
+bond_energy = 2.07 
 temperature = 300
+e0 = 0.1
 
 # site energy, e_(bond number)
-e_0 = get_site_energy(bond_energy, 0)   
-e_1 = get_site_energy(bond_energy, 1)
-e_2 = get_site_energy(bond_energy, 2)
-e_3 = get_site_energy(bond_energy, 3)
+e_site = np.zeros(4)
+for i in range(4):
+    e_site[i] = get_site_energy(bond_energy, i)
 
 # activation energy, e_a_(start to end)
-e_a_3to0 = get_activation_energy(e_3, e_0)
-e_a_0to3 = get_activation_energy(e_0, e_3)
-e_a_2to3 = get_activation_energy(e_2, e_3)
-e_a_3to2 = get_activation_energy(e_3, e_2)
-e_a_3to3 = get_activation_energy(e_3, e_3)
+e_a = np.zeros((4, 4))
+for i in range(4):
+    for j in range(4):
+        e_a[i, j] = get_activation_energy(e_site[i], e_site[j], e0=e0)
 
 # diffusion rate, rate_(start to end)
-rate_3to0 = get_diffusion_rate(e_a_3to0, temperature)     
-rate_0to3 = get_diffusion_rate(e_a_0to3, temperature)              
-rate_2to3 = get_diffusion_rate(e_a_2to3, temperature)            
-rate_3to2 = get_diffusion_rate(e_a_3to2, temperature)        
-rate_3to3 = get_diffusion_rate(e_a_3to3, temperature)     
-
-# atom_radius = 0.4
-steps = 100
-t = 0
+diffusion_rate = np.zeros((4, 4))
+for i in range(4):
+    for j in range(4):
+        diffusion_rate[i, j] = get_diffusion_rate(e_a[i, j], temperature)
+  
+steps = 10000
+time_elapsed = 0
 
 if __name__ == "__main__":
     lattice = init_lattice(width, height)
+    atom_num = lattice.sum()
     for i in range(1, steps+1):
-        print(f'---------------- step {i} ---------------------')
-        diffuse_one_step(lattice, True)
-        draw_lattice(lattice)
-        time.sleep(0.4)
-        os.system('clear')
+        diffuse_one_step(lattice)
+        if i % 1000 == 0:
+            print(f'---------------- step {i} ---------------------')
+            print(f'Time elapsed : {time_elapsed} s')
+            if lattice.sum() != atom_num:
+                print('error!')
+                break
