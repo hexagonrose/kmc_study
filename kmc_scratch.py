@@ -208,12 +208,12 @@ time_elapsed = 0
 
 if __name__ == "__main__":
     lattice = init_lattice(width, height)
-    atom_num = lattice.sum()
     for i in range(1, steps+1):
-        diffuse_one_step(lattice)
-        if i % 1000 == 0:
-            print(f'---------------- step {i} ---------------------')
-            print(f'Time elapsed : {time_elapsed} s')
-            if lattice.sum() != atom_num:
-                print('error!')
-                break
+        print(f'---------------- step {i} ---------------------')
+        diffuse_one_step(lattice, True)
+        draw_lattice(lattice)
+        print(f'Time elapsed : {time_elapsed} s')
+        time.sleep(0.4)
+        
+        os.system('clear')
+        
